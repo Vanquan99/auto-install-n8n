@@ -12,6 +12,18 @@ Script này dùng để **cài đặt n8n chuẩn production trên VPS riêng** 
 
 ---
 
+## 🚀 Quick Install
+
+Run the following command on an Ubuntu VPS:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/Vanquan99/auto-install-n8n/main/install_n8n.sh \
+  > install_n8n.sh && chmod +x install_n8n.sh && sudo ./install_n8n.sh
+```
+
+
+---
+
 ## 1. Kiến trúc tổng thể
 
 ```
