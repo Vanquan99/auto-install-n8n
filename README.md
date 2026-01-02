@@ -30,6 +30,15 @@ curl -sSL https://raw.githubusercontent.com/Vanquan99/auto-install-n8n/main/inst
 
 Update latest
 
+Update n8n safely:
+
+sudo ./update_n8n.sh
+
+Update to specific version:
+
+sudo N8N_VERSION=1.26.0 ./update_n8n.sh
+
+Recommand
 ```bash
 curl -sSL https://raw.githubusercontent.com/Vanquan99/auto-install-n8n/main/update_n8n.sh | sudo bash
 ```
