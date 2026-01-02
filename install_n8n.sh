@@ -1,188 +1,141 @@
 #!/usr/bin/env bash
 set -e
-set -o pipefail
 
-# ===============================
-# BASIC CHECKS
-# ===============================
-if [[ $EUID -ne 0 ]]; then
-  echo "❌ Please run this script as root (sudo)"
-  exit 1
-fi
-
-if ! command -v lsb_release >/dev/null 2>&1; then
-  echo "❌ lsb_release not found"
-  exit 1
-fi
-
-if ! lsb_release -a 2>/dev/null | grep -qi ubuntu; then
-  echo "❌ This script supports Ubuntu only"
-  exit 1
-fi
-
-# ===============================
-# VARIABLES
-# ===============================
-N8N_DIR="/home/n8n"
+### ===== CONFIG =====
+N8N_DIR="/opt/n8n"
+COMPOSE_FILE="$N8N_DIR/docker-compose.yml"
+NGINX_SITE="/etc/nginx/sites-available/n8n"
 TIMEZONE="Asia/Ho_Chi_Minh"
+### ==================
 
-# ===============================
-# FUNCTIONS
-# ===============================
 log() {
-  echo -e "\n[INFO] $1"
+  echo -e "\033[1;32m[INFO]\033[0m $1"
 }
 
-success() {
-  echo "[OK] $1"
+warn() {
+  echo -e "\033[1;33m[WARN]\033[0m $1"
 }
 
-get_server_ip() {
-  curl -s https://api.ipify.org
-}
-
-check_domain() {
-  local domain=$1
-  local server_ip
-  server_ip=$(get_server_ip)
-  local domain_ip
-  domain_ip=$(dig +short "$domain" | tail -n1)
-
-  [[ "$domain_ip" == "$server_ip" ]]
-}
-
-# ===============================
-# INPUT DOMAIN
-# ===============================
-read -rp "Enter your domain or subdomain: " DOMAIN
-
-log "Checking DNS for $DOMAIN"
-if check_domain "$DOMAIN"; then
-  success "Domain points correctly to this server"
-else
-  echo "❌ Domain does not point to this server"
-  echo "👉 Please point $DOMAIN to IP: $(get_server_ip)"
+error() {
+  echo -e "\033[1;31m[ERROR]\033[0m $1"
   exit 1
+}
+
+### ===== ROOT CHECK =====
+if [[ $EUID -ne 0 ]]; then
+  error "Please run this script as root (sudo)"
 fi
 
-# ===============================
-# CLEAN OLD DOCKER (SAFE)
-# ===============================
-log "Removing old Docker / containerd if exists"
-apt-get remove -y docker docker-engine docker.io docker-ce docker-ce-cli containerd containerd.io runc || true
-apt-get purge -y docker docker-engine docker.io docker-ce docker-ce-cli containerd containerd.io runc || true
-apt-get autoremove -y
-apt-get autoclean
-success "Docker cleanup completed"
+### ===== DOMAIN INPUT =====
+read -rp "Enter your domain or subdomain: " DOMAIN
+if [[ -z "$DOMAIN" ]]; then
+  error "Domain cannot be empty"
+fi
 
-# ===============================
-# INSTALL DOCKER (OFFICIAL)
-# ===============================
-log "Installing Docker"
+SERVER_IP=$(curl -s https://api.ipify.org)
+DOMAIN_IP=$(dig +short "$DOMAIN" | tail -n1)
 
-apt-get update
-apt-get install -y ca-certificates curl gnupg lsb-release
+if [[ "$SERVER_IP" != "$DOMAIN_IP" ]]; then
+  error "Domain $DOMAIN does not point to this server ($SERVER_IP)"
+fi
 
-mkdir -p /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-  | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+log "Domain verified: $DOMAIN → $SERVER_IP"
 
-echo \
-  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-  https://download.docker.com/linux/ubuntu \
-  $(lsb_release -cs) stable" \
-  > /etc/apt/sources.list.d/docker.list
+### ===== INSTALL DOCKER (SAFE) =====
+if ! command -v docker >/dev/null 2>&1; then
+  log "Installing Docker (official repo)"
 
-apt-get update
-apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-success "Docker installed"
+  apt update
+  apt install -y ca-certificates curl gnupg lsb-release
 
-# ===============================
-# PREPARE N8N DIRECTORY
-# ===============================
+  mkdir -p /etc/apt/keyrings
+  curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+    | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+
+  echo \
+    "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
+    https://download.docker.com/linux/ubuntu \
+    $(lsb_release -cs) stable" \
+    > /etc/apt/sources.list.d/docker.list
+
+  apt update
+  apt install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+  systemctl enable docker
+  systemctl start docker
+else
+  log "Docker already installed"
+fi
+
+### ===== INSTALL NGINX =====
+if ! command -v nginx >/dev/null 2>&1; then
+  log "Installing Nginx"
+  apt install -y nginx
+  systemctl enable nginx
+  systemctl start nginx
+else
+  log "Nginx already installed"
+fi
+
+### ===== INSTALL CERTBOT =====
+if ! command -v certbot >/dev/null 2>&1; then
+  log "Installing Certbot"
+  apt install -y certbot python3-certbot-nginx
+else
+  log "Certbot already installed"
+fi
+
+### ===== PREPARE N8N DIR =====
 log "Preparing n8n directory"
 mkdir -p "$N8N_DIR"
 
-# ===============================
-# DOCKER COMPOSE
-# ===============================
-if [ ! -f "$N8N_DIR/docker-compose.yml" ]; then
+### ===== DOCKER COMPOSE =====
+if [[ ! -f "$COMPOSE_FILE" ]]; then
   log "Creating docker-compose.yml"
 
-  cat <<EOF > "$N8N_DIR/docker-compose.yml"
-version: "3.8"
-
+  cat > "$COMPOSE_FILE" <<EOF
 services:
   n8n:
     image: n8nio/n8n
     restart: always
+    ports:
+      - "127.0.0.1:5678:5678"
     environment:
-      - N8N_HOST=${DOMAIN}
+      - N8N_HOST=$DOMAIN
       - N8N_PORT=5678
       - N8N_PROTOCOL=https
+      - WEBHOOK_URL=https://$DOMAIN/
       - NODE_ENV=production
-      - WEBHOOK_URL=https://${DOMAIN}
-      - GENERIC_TIMEZONE=${TIMEZONE}
-      - N8N_DIAGNOSTICS_ENABLED=false
+      - GENERIC_TIMEZONE=$TIMEZONE
     volumes:
-      - ${N8N_DIR}:/home/node/.n8n
-    networks:
-      - n8n_network
+      - n8n_data:/home/node/.n8n
 
-  nginx:
-    image: nginx:stable
-    restart: always
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ${N8N_DIR}/nginx.conf:/etc/nginx/conf.d/default.conf
-      - ${N8N_DIR}/certbot:/etc/letsencrypt
-      - ${N8N_DIR}/certbot-www:/var/www/certbot
-    depends_on:
-      - n8n
-    networks:
-      - n8n_network
-
-networks:
-  n8n_network:
-    driver: bridge
+volumes:
+  n8n_data:
 EOF
-
-  success "docker-compose.yml created"
 else
-  echo "[SKIP] docker-compose.yml already exists"
+  warn "docker-compose.yml already exists"
 fi
 
-# ===============================
-# NGINX CONFIG
-# ===============================
-if [ ! -f "$N8N_DIR/nginx.conf" ]; then
+### ===== START N8N =====
+log "Starting n8n stack"
+cd "$N8N_DIR"
+docker compose up -d
+
+### ===== NGINX CONFIG =====
+if [[ ! -f "$NGINX_SITE" ]]; then
   log "Creating nginx config"
 
-  cat <<EOF > "$N8N_DIR/nginx.conf"
+  cat > "$NGINX_SITE" <<EOF
 server {
     listen 80;
-    server_name ${DOMAIN};
-
-    location /.well-known/acme-challenge/ {
-        root /var/www/certbot;
-    }
+    server_name $DOMAIN;
 
     location / {
-        return 301 https://\$host\$request_uri;
-    }
-}
+        proxy_pass http://127.0.0.1:5678;
+        proxy_http_version 1.1;
 
-server {
-    listen 443 ssl;
-    server_name ${DOMAIN};
-
-    ssl_certificate /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
-
-    location / {
-        proxy_pass http://n8n:5678;
+        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Connection "upgrade";
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
@@ -191,25 +144,27 @@ server {
 }
 EOF
 
-  success "nginx.conf created"
+  ln -s "$NGINX_SITE" /etc/nginx/sites-enabled/n8n
 else
-  echo "[SKIP] nginx.conf already exists"
+  warn "nginx config already exists"
 fi
 
-# ===============================
-# START SERVICES
-# ===============================
-log "Starting n8n stack"
-cd "$N8N_DIR"
-docker compose up -d
-success "n8n is running"
+nginx -t
+systemctl reload nginx
 
-# ===============================
-# DONE
-# ===============================
+### ===== SSL =====
+if [[ ! -d "/etc/letsencrypt/live/$DOMAIN" ]]; then
+  log "Issuing SSL certificate"
+  certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos -m admin@$DOMAIN --redirect
+else
+  log "SSL certificate already exists"
+fi
+
+### ===== DONE =====
 echo ""
-echo "================================================="
-echo "✅ n8n installation completed"
-echo "🌐 URL: https://${DOMAIN}"
-echo "📁 Data: ${N8N_DIR}"
-echo "================================================="
+echo "========================================"
+echo " n8n installed successfully (v1.1.0)"
+echo "----------------------------------------"
+echo " URL: https://$DOMAIN"
+echo " Data: Docker volume n8n_data"
+echo "========================================"
