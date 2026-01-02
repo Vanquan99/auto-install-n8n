@@ -19,13 +19,26 @@ Run the following command on an Ubuntu VPS:
 ```bash
 curl -sSL https://raw.githubusercontent.com/Vanquan99/auto-install-n8n/main/install_n8n.sh \
   > install_n8n.sh && chmod +x install_n8n.sh && sudo ./install_n8n.sh
-
+```
 OR version lastest
-
+```bash
 curl -sSL https://raw.githubusercontent.com/Vanquan99/auto-install-n8n/main/install_n8n.sh | sudo bash
 
 ```
 
+## 🚀 Quick Update Version
+
+Update latest
+
+```bash
+curl -sSL https://raw.githubusercontent.com/Vanquan99/auto-install-n8n/main/update_n8n.sh | sudo bash
+```
+
+OR version 
+```bash
+curl -sSL https://raw.githubusercontent.com/Vanquan99/auto-install-n8n/main/update_n8n.sh \
+  | sudo N8N_VERSION=1.26.0 bash
+```
 
 ---
 
