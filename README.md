@@ -133,7 +133,7 @@ curl http://127.0.0.1:5678
 ## 5. Cấu trúc thư mục
 
 ```
-/opt/n8n
+/home/n8n
  ├── docker-compose.yml
  └── docker volume: n8n_data
 ```
@@ -151,7 +151,7 @@ n8n_data
 ## 6. Update n8n
 
 ```bash
-cd /opt/n8n
+cd /home/n8n
 docker-compose pull
 docker-compose up -d
 ```
