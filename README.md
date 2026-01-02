@@ -19,6 +19,11 @@ Run the following command on an Ubuntu VPS:
 ```bash
 curl -sSL https://raw.githubusercontent.com/Vanquan99/auto-install-n8n/main/install_n8n.sh \
   > install_n8n.sh && chmod +x install_n8n.sh && sudo ./install_n8n.sh
+
+OR version lastest
+
+curl -sSL https://raw.githubusercontent.com/Vanquan99/auto-install-n8n/main/install_n8n.sh | sudo bash
+
 ```
 
 
