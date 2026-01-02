@@ -1,170 +1,154 @@
 #!/usr/bin/env bash
 set -e
 
-### ===== CONFIG =====
+SCRIPT_VERSION="1.1.1"
+
+# ====== CONFIG ======
 N8N_DIR="/opt/n8n"
-COMPOSE_FILE="$N8N_DIR/docker-compose.yml"
-NGINX_SITE="/etc/nginx/sites-available/n8n"
+N8N_VOLUME_NAME="n8n_n8n_data"
+N8N_VERSION="${N8N_VERSION:-latest}"
 TIMEZONE="Asia/Ho_Chi_Minh"
-### ==================
 
-log() {
-  echo -e "\033[1;32m[INFO]\033[0m $1"
-}
-
-warn() {
-  echo -e "\033[1;33m[WARN]\033[0m $1"
-}
-
-error() {
-  echo -e "\033[1;31m[ERROR]\033[0m $1"
-  exit 1
-}
-
-### ===== ROOT CHECK =====
+# ====== CHECK ROOT ======
 if [[ $EUID -ne 0 ]]; then
-  error "Please run this script as root (sudo)"
+  echo "[ERROR] Please run as root"
+  exit 1
 fi
 
-### ===== DOMAIN INPUT =====
-read -rp "Enter your domain or subdomain: " DOMAIN
+echo "======================================="
+echo " n8n Production Installer v${SCRIPT_VERSION}"
+echo " n8n version: ${N8N_VERSION}"
+echo "======================================="
+
+# ====== ASK DOMAIN ======
+read -rp "Enter your domain (e.g. n8n.example.com): " DOMAIN
 if [[ -z "$DOMAIN" ]]; then
-  error "Domain cannot be empty"
+  echo "[ERROR] Domain cannot be empty"
+  exit 1
 fi
 
 SERVER_IP=$(curl -s https://api.ipify.org)
 DOMAIN_IP=$(dig +short "$DOMAIN" | tail -n1)
 
 if [[ "$SERVER_IP" != "$DOMAIN_IP" ]]; then
-  error "Domain $DOMAIN does not point to this server ($SERVER_IP)"
+  echo "[ERROR] Domain does not point to this server"
+  echo "Domain IP : $DOMAIN_IP"
+  echo "Server IP : $SERVER_IP"
+  exit 1
 fi
 
-log "Domain verified: $DOMAIN → $SERVER_IP"
+echo "[OK] Domain verified"
 
-### ===== INSTALL DOCKER (SAFE) =====
-if ! command -v docker >/dev/null 2>&1; then
-  log "Installing Docker (official repo)"
-
+# ====== INSTALL DOCKER ======
+if ! command -v docker &>/dev/null; then
+  echo "[INFO] Installing Docker"
   apt update
   apt install -y ca-certificates curl gnupg lsb-release
-
-  mkdir -p /etc/apt/keyrings
-  curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-    | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-
-  echo \
-    "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-    https://download.docker.com/linux/ubuntu \
-    $(lsb_release -cs) stable" \
-    > /etc/apt/sources.list.d/docker.list
-
-  apt update
-  apt install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
-  systemctl enable docker
-  systemctl start docker
-else
-  log "Docker already installed"
+  curl -fsSL https://get.docker.com | sh
 fi
 
-### ===== INSTALL NGINX =====
-if ! command -v nginx >/dev/null 2>&1; then
-  log "Installing Nginx"
-  apt install -y nginx
-  systemctl enable nginx
-  systemctl start nginx
-else
-  log "Nginx already installed"
+if ! docker compose version &>/dev/null; then
+  echo "[INFO] Installing docker-compose plugin"
+  apt install -y docker-compose-plugin
 fi
 
-### ===== INSTALL CERTBOT =====
-if ! command -v certbot >/dev/null 2>&1; then
-  log "Installing Certbot"
-  apt install -y certbot python3-certbot-nginx
-else
-  log "Certbot already installed"
-fi
+echo "[OK] Docker installed"
 
-### ===== PREPARE N8N DIR =====
-log "Preparing n8n directory"
+# ====== PREPARE DIR ======
 mkdir -p "$N8N_DIR"
+cd "$N8N_DIR"
 
-### ===== DOCKER COMPOSE =====
-if [[ ! -f "$COMPOSE_FILE" ]]; then
-  log "Creating docker-compose.yml"
+# ====== CHECK EXISTING VOLUME ======
+if docker volume inspect "$N8N_VOLUME_NAME" &>/dev/null; then
+  echo "[INFO] Existing n8n data volume detected: $N8N_VOLUME_NAME"
+  REUSE_VOLUME=true
+else
+  echo "[INFO] No existing volume found, will create new one"
+  REUSE_VOLUME=false
+fi
 
-  cat > "$COMPOSE_FILE" <<EOF
+# ====== WRITE docker-compose.yml ======
+cat > docker-compose.yml <<EOF
 services:
   n8n:
-    image: n8nio/n8n
+    image: n8nio/n8n:${N8N_VERSION}
+    container_name: n8n
     restart: always
     ports:
       - "127.0.0.1:5678:5678"
     environment:
-      - N8N_HOST=$DOMAIN
+      - NODE_ENV=production
+      - GENERIC_TIMEZONE=${TIMEZONE}
+      - N8N_HOST=${DOMAIN}
       - N8N_PORT=5678
       - N8N_PROTOCOL=https
-      - WEBHOOK_URL=https://$DOMAIN/
-      - NODE_ENV=production
-      - GENERIC_TIMEZONE=$TIMEZONE
+      - WEBHOOK_URL=https://${DOMAIN}
     volumes:
-      - n8n_data:/home/node/.n8n
+      - ${N8N_VOLUME_NAME}:/home/node/.n8n
 
 volumes:
-  n8n_data:
+  ${N8N_VOLUME_NAME}:
+    external: true
 EOF
-else
-  warn "docker-compose.yml already exists"
+
+echo "[OK] docker-compose.yml created"
+
+# ====== ENSURE VOLUME EXISTS ======
+if [[ "$REUSE_VOLUME" == false ]]; then
+  docker volume create "$N8N_VOLUME_NAME"
+  echo "[OK] Volume created: $N8N_VOLUME_NAME"
 fi
 
-### ===== START N8N =====
-log "Starting n8n stack"
-cd "$N8N_DIR"
-docker compose up -d
+# ====== INSTALL NGINX + CERTBOT ======
+if ! command -v nginx &>/dev/null; then
+  echo "[INFO] Installing Nginx"
+  apt install -y nginx
+fi
 
-### ===== NGINX CONFIG =====
-if [[ ! -f "$NGINX_SITE" ]]; then
-  log "Creating nginx config"
+if ! command -v certbot &>/dev/null; then
+  echo "[INFO] Installing Certbot"
+  apt install -y certbot python3-certbot-nginx
+fi
 
-  cat > "$NGINX_SITE" <<EOF
+# ====== NGINX CONFIG ======
+NGINX_CONF="/etc/nginx/sites-available/n8n.conf"
+
+cat > "$NGINX_CONF" <<EOF
 server {
     listen 80;
-    server_name $DOMAIN;
+    server_name ${DOMAIN};
 
     location / {
         proxy_pass http://127.0.0.1:5678;
         proxy_http_version 1.1;
-
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection "upgrade";
         proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For \$remote_addr;
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
 }
 EOF
 
-  ln -s "$NGINX_SITE" /etc/nginx/sites-enabled/n8n
-else
-  warn "nginx config already exists"
-fi
+ln -sf "$NGINX_CONF" /etc/nginx/sites-enabled/n8n.conf
+rm -f /etc/nginx/sites-enabled/default
 
 nginx -t
 systemctl reload nginx
 
-### ===== SSL =====
-if [[ ! -d "/etc/letsencrypt/live/$DOMAIN" ]]; then
-  log "Issuing SSL certificate"
-  certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos -m admin@$DOMAIN --redirect
-else
-  log "SSL certificate already exists"
+# ====== SSL ======
+if [[ ! -d "/etc/letsencrypt/live/${DOMAIN}" ]]; then
+  certbot --nginx -d "$DOMAIN" --non-interactive --agree-tos -m admin@"$DOMAIN"
 fi
 
-### ===== DONE =====
+# ====== START N8N ======
+echo "[INFO] Starting n8n"
+docker compose pull
+docker compose up -d
+
 echo ""
-echo "========================================"
-echo " n8n installed successfully (v1.1.0)"
-echo "----------------------------------------"
-echo " URL: https://$DOMAIN"
-echo " Data: Docker volume n8n_data"
-echo "========================================"
+echo "======================================="
+echo " n8n is READY"
+echo " URL: https://${DOMAIN}"
+echo " Volume: ${N8N_VOLUME_NAME}"
+echo "======================================="
